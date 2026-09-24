@@ -1,0 +1,1363 @@
+import sys
+import subprocess
+import importlib
+
+
+def ensure_package(package_name, import_name=None):
+    try:
+        importlib.import_module(import_name or package_name)
+    except ImportError:
+        subprocess.check_call([
+            sys.executable,
+            "-m",
+            "pip",
+            "install",
+            package_name,
+        ])
+
+
+ensure_package("dearpygui", "dearpygui")
+ensure_package("requests", "requests")
+ensure_package("pillow", "PIL")
+
+
+import io
+import threading
+import webbrowser
+from datetime import datetime
+
+import dearpygui.dearpygui as dpg
+import requests
+from PIL import Image
+
+
+APP_TITLE = "yourestillhere"
+GITHUB_USERNAME = "yourestillhere"
+GITHUB_API = "https://api.github.com"
+
+EMAIL = "soul@priest.com"
+
+ABOUT_TEXT = (
+    "This app is a place to showcase what I’ve built and what I’m currently "
+    "working on. It’s basically a collection of my projects, ideas, and things "
+    "I’ve made over time. I’ll keep adding new stuff as I build it and hopefully "
+    "give people a better look at what I’m working on."
+)
+
+SOCIALS = [
+    ("GitHub", "https://github.com/yourestillhere"),
+    ("YouTube", "https://youtube.com/@priesteleven"),
+    ("Telegram", "https://t.me/oncethen"),
+    ("X", "https://x.com/openyourledger"),
+]
+
+BG = (11, 12, 15, 255)
+PANEL = (17, 18, 22, 255)
+CARD = (23, 24, 29, 255)
+CARD_HOVER = (31, 32, 39, 255)
+BORDER = (42, 43, 50, 255)
+
+TEXT = (240, 241, 245, 255)
+TEXT_DIM = (148, 151, 162, 255)
+
+ACCENT = (115, 92, 255, 255)
+ACCENT_HOVER = (135, 112, 255, 255)
+
+YELLOW = (235, 190, 85, 255)
+GREEN = (80, 200, 120, 255)
+
+
+github_user = None
+github_repos = []
+
+avatar_pixels = None
+avatar_width = 0
+avatar_height = 0
+
+loading = True
+load_error = ""
+
+repo_search = ""
+
+data_lock = threading.Lock()
+
+profile_loaded = False
+repositories_loaded = False
+
+
+def ensure_fonts():
+    fonts = {}
+
+    with dpg.font_registry():
+
+        try:
+            fonts["default"] = dpg.add_font(
+                "C:/Windows/Fonts/segoeui.ttf",
+                17,
+            )
+        except Exception:
+            fonts["default"] = None
+
+        try:
+            fonts["title"] = dpg.add_font(
+                "C:/Windows/Fonts/segoeuib.ttf",
+                30,
+            )
+        except Exception:
+            fonts["title"] = fonts["default"]
+
+        try:
+            fonts["heading"] = dpg.add_font(
+                "C:/Windows/Fonts/segoeuib.ttf",
+                22,
+            )
+        except Exception:
+            fonts["heading"] = fonts["default"]
+
+        try:
+            fonts["small"] = dpg.add_font(
+                "C:/Windows/Fonts/segoeui.ttf",
+                14,
+            )
+        except Exception:
+            fonts["small"] = fonts["default"]
+
+    return fonts
+
+
+def open_url(url):
+    if not url:
+        return
+
+    try:
+        webbrowser.open_new_tab(url)
+    except Exception as exc:
+        print(f"Could not open link: {exc}")
+
+
+def copy_to_clipboard(text):
+    try:
+        import tkinter as tk
+
+        root = tk.Tk()
+        root.withdraw()
+
+        root.clipboard_clear()
+        root.clipboard_append(text)
+
+        root.update()
+        root.destroy()
+
+        if dpg.does_item_exist("email_status"):
+            dpg.set_value(
+                "email_status",
+                f"Copied {text} to clipboard",
+            )
+
+    except Exception as exc:
+        print(f"Could not copy to clipboard: {exc}")
+
+
+def link_callback(sender, app_data, user_data):
+    if not user_data:
+        return
+
+    if isinstance(user_data, str) and user_data.startswith("email:"):
+        copy_to_clipboard(user_data[6:])
+        return
+
+    open_url(user_data)
+
+
+def format_date(value):
+    if not value:
+        return "Unknown"
+
+    try:
+        date = datetime.fromisoformat(
+            value.replace("Z", "+00:00")
+        )
+
+        return date.strftime("%b %d, %Y")
+
+    except Exception:
+        return str(value)[:10]
+
+
+def truncate(text, length=155):
+    if not text:
+        return "No description provided."
+
+    text = str(text)
+    text = text.replace("\n", " ")
+    text = text.strip()
+
+    if len(text) <= length:
+        return text
+
+    return text[:length - 3] + "..."
+
+
+def github_request(url):
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "User-Agent": "yourestillhere-portfolio",
+        "X-GitHub-Api-Version": "2022-11-28",
+    }
+
+    response = requests.get(
+        url,
+        headers=headers,
+        timeout=15,
+    )
+
+    response.raise_for_status()
+
+    return response.json()
+
+
+def load_github_data():
+    global github_user
+    global github_repos
+    global avatar_pixels
+    global avatar_width
+    global avatar_height
+    global loading
+    global load_error
+
+    try:
+        user = github_request(
+            f"{GITHUB_API}/users/{GITHUB_USERNAME}"
+        )
+
+        repos = github_request(
+            f"{GITHUB_API}/users/{GITHUB_USERNAME}/repos"
+            "?type=owner&sort=updated&direction=desc&per_page=100"
+        )
+
+        public_repos = [
+            repo
+            for repo in repos
+            if not repo.get("private", False)
+        ]
+
+        new_pixels = None
+        new_width = 0
+        new_height = 0
+
+        avatar_url = user.get("avatar_url")
+
+        if avatar_url:
+
+            try:
+                response = requests.get(
+                    avatar_url,
+                    headers={
+                        "User-Agent": "yourestillhere-portfolio"
+                    },
+                    timeout=15,
+                )
+
+                response.raise_for_status()
+
+                image = Image.open(
+                    io.BytesIO(response.content)
+                ).convert("RGBA")
+
+                image.thumbnail((256, 256))
+
+                new_width = image.width
+                new_height = image.height
+                new_pixels = list(image.getdata())
+
+            except Exception as exc:
+                print(f"Avatar error: {exc}")
+
+        with data_lock:
+            github_user = user
+            github_repos = public_repos
+
+            avatar_pixels = new_pixels
+            avatar_width = new_width
+            avatar_height = new_height
+
+            loading = False
+            load_error = ""
+
+    except Exception as exc:
+
+        with data_lock:
+            loading = False
+            load_error = str(exc)
+
+
+def setup_theme():
+
+    with dpg.theme() as theme:
+
+        with dpg.theme_component(dpg.mvAll):
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_WindowBg,
+                BG,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_ChildBg,
+                PANEL,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_PopupBg,
+                CARD,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_Border,
+                BORDER,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_Text,
+                TEXT,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_TextDisabled,
+                TEXT_DIM,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_Button,
+                CARD,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_ButtonHovered,
+                CARD_HOVER,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_ButtonActive,
+                ACCENT,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_FrameBg,
+                CARD,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_FrameBgHovered,
+                CARD_HOVER,
+            )
+
+            dpg.add_theme_color(
+                dpg.mvThemeCol_FrameBgActive,
+                CARD_HOVER,
+            )
+
+            dpg.add_theme_style(
+                dpg.mvStyleVar_WindowRounding,
+                0,
+            )
+
+            dpg.add_theme_style(
+                dpg.mvStyleVar_ChildRounding,
+                9,
+            )
+
+            dpg.add_theme_style(
+                dpg.mvStyleVar_FrameRounding,
+                7,
+            )
+
+            dpg.add_theme_style(
+                dpg.mvStyleVar_FramePadding,
+                10,
+                8,
+            )
+
+            dpg.add_theme_style(
+                dpg.mvStyleVar_ItemSpacing,
+                8,
+                8,
+            )
+
+            dpg.add_theme_style(
+                dpg.mvStyleVar_WindowPadding,
+                20,
+                20,
+            )
+
+    dpg.bind_theme(theme)
+
+
+def create_avatar_texture():
+
+    if not avatar_pixels:
+        return None
+
+    if dpg.does_item_exist("avatar_texture"):
+        dpg.delete_item("avatar_texture")
+
+    values = []
+
+    for pixel in avatar_pixels:
+
+        values.append(pixel[0] / 255.0)
+        values.append(pixel[1] / 255.0)
+        values.append(pixel[2] / 255.0)
+        values.append(pixel[3] / 255.0)
+
+    with dpg.texture_registry():
+
+        dpg.add_dynamic_texture(
+            width=avatar_width,
+            height=avatar_height,
+            default_value=values,
+            tag="avatar_texture",
+        )
+
+    return "avatar_texture"
+
+
+def add_section_header(parent, title, subtitle=None):
+
+    dpg.add_text(
+        title,
+        color=TEXT,
+        parent=parent,
+    )
+
+    if subtitle:
+
+        dpg.add_spacer(
+            height=3,
+            parent=parent,
+        )
+
+        dpg.add_text(
+            subtitle,
+            color=TEXT_DIM,
+            parent=parent,
+        )
+
+
+def build_profile(parent):
+
+    if not github_user:
+
+        dpg.add_text(
+            "GitHub profile unavailable.",
+            color=TEXT_DIM,
+            parent=parent,
+        )
+
+        return
+
+    user = github_user
+
+    avatar = create_avatar_texture()
+
+    row = dpg.add_group(
+        horizontal=True,
+        parent=parent,
+    )
+
+    if avatar:
+
+        dpg.add_image(
+            avatar,
+            width=125,
+            height=125,
+            parent=row,
+        )
+
+        dpg.add_spacer(
+            width=20,
+            parent=row,
+        )
+
+    info = dpg.add_group(
+        parent=row,
+    )
+
+    name = (
+        user.get("name")
+        or user.get(
+            "login",
+            GITHUB_USERNAME,
+        )
+    )
+
+    username = user.get(
+        "login",
+        GITHUB_USERNAME,
+    )
+
+    dpg.add_text(
+        name,
+        color=TEXT,
+        parent=info,
+    )
+
+    dpg.add_text(
+        f"@{username}",
+        color=ACCENT,
+        parent=info,
+    )
+
+    dpg.add_spacer(
+        height=7,
+        parent=info,
+    )
+
+    bio = user.get("bio")
+
+    if bio:
+
+        dpg.add_text(
+            bio,
+            color=TEXT_DIM,
+            wrap=700,
+            parent=info,
+        )
+
+    else:
+
+        dpg.add_text(
+            "No GitHub bio provided.",
+            color=TEXT_DIM,
+            parent=info,
+        )
+
+    dpg.add_spacer(
+        height=10,
+        parent=info,
+    )
+
+    stats = dpg.add_group(
+        horizontal=True,
+        parent=info,
+    )
+
+    dpg.add_text(
+        f"{user.get('public_repos', 0)} repositories",
+        color=TEXT_DIM,
+        parent=stats,
+    )
+
+    dpg.add_spacer(
+        width=15,
+        parent=stats,
+    )
+
+    dpg.add_text(
+        f"{user.get('followers', 0)} followers",
+        color=TEXT_DIM,
+        parent=stats,
+    )
+
+    dpg.add_spacer(
+        width=15,
+        parent=stats,
+    )
+
+    dpg.add_text(
+        f"{user.get('following', 0)} following",
+        color=TEXT_DIM,
+        parent=stats,
+    )
+
+    dpg.add_spacer(
+        height=15,
+        parent=parent,
+    )
+
+    dpg.add_button(
+        label="Open GitHub Profile",
+        width=190,
+        height=38,
+        callback=link_callback,
+        user_data=user.get(
+            "html_url",
+            f"https://github.com/{GITHUB_USERNAME}",
+        ),
+        parent=parent,
+    )
+
+
+def build_repo_card(repo, parent):
+
+    name = repo.get(
+        "name",
+        "Unknown",
+    )
+
+    description = truncate(
+        repo.get("description"),
+        155,
+    )
+
+    language = (
+        repo.get("language")
+        or "Unknown"
+    )
+
+    stars = repo.get(
+        "stargazers_count",
+        0,
+    )
+
+    forks = repo.get(
+        "forks_count",
+        0,
+    )
+
+    updated = format_date(
+        repo.get("updated_at")
+    )
+
+    url = repo.get(
+        "html_url",
+        f"https://github.com/"
+        f"{GITHUB_USERNAME}/"
+        f"{name}",
+    )
+
+    card = dpg.add_group(
+        parent=parent,
+    )
+
+    dpg.add_text(
+        name,
+        color=TEXT,
+        parent=card,
+    )
+
+    dpg.add_text(
+        language,
+        color=ACCENT,
+        parent=card,
+    )
+
+    dpg.add_spacer(
+        height=6,
+        parent=card,
+    )
+
+    dpg.add_text(
+        description,
+        color=TEXT_DIM,
+        wrap=480,
+        parent=card,
+    )
+
+    dpg.add_spacer(
+        height=8,
+        parent=card,
+    )
+
+    stats = dpg.add_group(
+        horizontal=True,
+        parent=card,
+    )
+
+    dpg.add_text(
+        f"★ {stars}",
+        color=YELLOW,
+        parent=stats,
+    )
+
+    dpg.add_spacer(
+        width=14,
+        parent=stats,
+    )
+
+    dpg.add_text(
+        f"Forks {forks}",
+        color=TEXT_DIM,
+        parent=stats,
+    )
+
+    dpg.add_spacer(
+        width=14,
+        parent=stats,
+    )
+
+    dpg.add_text(
+        f"Updated {updated}",
+        color=TEXT_DIM,
+        parent=stats,
+    )
+
+    dpg.add_spacer(
+        height=9,
+        parent=card,
+    )
+
+    dpg.add_button(
+        label="View Repository",
+        width=160,
+        height=35,
+        callback=link_callback,
+        user_data=url,
+        parent=card,
+    )
+
+
+def get_filtered_repositories():
+
+    if not repo_search.strip():
+        return github_repos
+
+    query = repo_search.lower().strip()
+
+    results = []
+
+    for repo in github_repos:
+
+        name = (
+            repo.get("name") or ""
+        ).lower()
+
+        description = (
+            repo.get("description") or ""
+        ).lower()
+
+        language = (
+            repo.get("language") or ""
+        ).lower()
+
+        if (
+            query in name
+            or query in description
+            or query in language
+        ):
+            results.append(repo)
+
+    return results
+
+
+def rebuild_repositories():
+
+    if not dpg.does_item_exist(
+        "repo_container"
+    ):
+        return
+
+    dpg.delete_item(
+        "repo_container",
+        children_only=True,
+    )
+
+    repositories = get_filtered_repositories()
+
+    if not repositories:
+
+        dpg.add_text(
+            "No repositories found.",
+            color=TEXT_DIM,
+            parent="repo_container",
+        )
+
+        return
+
+    for index, repo in enumerate(repositories):
+
+        build_repo_card(
+            repo,
+            "repo_container",
+        )
+
+        if index < len(repositories) - 1:
+
+            dpg.add_separator(
+                parent="repo_container",
+            )
+
+            dpg.add_spacer(
+                height=10,
+                parent="repo_container",
+            )
+
+
+def repository_search_callback(
+    sender,
+    app_data,
+    user_data,
+):
+
+    global repo_search
+
+    repo_search = app_data or ""
+
+    rebuild_repositories()
+
+
+def build_repositories(parent):
+
+    section = dpg.add_group(
+        parent=parent,
+    )
+
+    add_section_header(
+        section,
+        "REPOSITORIES",
+        "My public GitHub projects",
+    )
+
+    dpg.add_spacer(
+        height=12,
+        parent=section,
+    )
+
+    dpg.add_input_text(
+        hint="Search repositories...",
+        width=420,
+        height=36,
+        callback=repository_search_callback,
+        parent=section,
+    )
+
+    dpg.add_spacer(
+        height=15,
+        parent=section,
+    )
+
+    dpg.add_text(
+        "Loading repositories...",
+        tag="repo_loading_text",
+        color=TEXT_DIM,
+        parent=section,
+    )
+
+    dpg.add_group(
+        tag="repo_container",
+        parent=section,
+    )
+
+
+def build_about(parent):
+
+    section = dpg.add_group(
+        parent=parent,
+    )
+
+    add_section_header(
+        section,
+        "ABOUT ME",
+    )
+
+    dpg.add_spacer(
+        height=10,
+        parent=section,
+    )
+
+    dpg.add_text(
+        ABOUT_TEXT,
+        wrap=1050,
+        color=TEXT_DIM,
+        parent=section,
+    )
+
+
+def build_socials(parent):
+
+    section = dpg.add_group(
+        parent=parent,
+    )
+
+    add_section_header(
+        section,
+        "SOCIALS",
+    )
+
+    dpg.add_spacer(
+        height=10,
+        parent=section,
+    )
+
+    row = dpg.add_group(
+        horizontal=True,
+        parent=section,
+    )
+
+    for name, url in SOCIALS:
+
+        dpg.add_button(
+            label=name,
+            width=115,
+            height=40,
+            callback=link_callback,
+            user_data=url,
+            parent=row,
+        )
+
+    dpg.add_button(
+        label="Email",
+        width=115,
+        height=40,
+        callback=link_callback,
+        user_data=f"email:{EMAIL}",
+        parent=row,
+    )
+
+    dpg.add_spacer(
+        height=8,
+        parent=section,
+    )
+
+    dpg.add_text(
+        "",
+        tag="email_status",
+        color=GREEN,
+        parent=section,
+    )
+
+
+def build_app():
+
+    main_window = dpg.add_window(
+        tag="main_window",
+        label=APP_TITLE,
+        no_title_bar=True,
+        no_resize=True,
+        no_move=True,
+        no_collapse=True,
+        no_scrollbar=True,
+        no_scroll_with_mouse=True,
+    )
+
+    page = dpg.add_child_window(
+        tag="page",
+        border=False,
+        autosize_x=True,
+        autosize_y=True,
+        horizontal_scrollbar=False,
+        parent=main_window,
+    )
+
+    dpg.add_text(
+        "yourestillhere",
+        color=TEXT,
+        parent=page,
+    )
+
+    dpg.add_text(
+        "PROJECTS • WORK • SOCIALS",
+        color=TEXT_DIM,
+        parent=page,
+    )
+
+    dpg.add_spacer(
+        height=25,
+        parent=page,
+    )
+
+    add_section_header(
+        page,
+        "GITHUB PROFILE",
+        "My public GitHub profile",
+    )
+
+    dpg.add_spacer(
+        height=12,
+        parent=page,
+    )
+
+    profile_area = dpg.add_group(
+        tag="profile_container",
+        parent=page,
+    )
+
+    dpg.add_spacer(
+        height=30,
+        parent=page,
+    )
+
+    dpg.add_separator(
+        parent=page,
+    )
+
+    dpg.add_spacer(
+        height=30,
+        parent=page,
+    )
+
+    build_repositories(
+        page
+    )
+
+    dpg.add_spacer(
+        height=30,
+        parent=page,
+    )
+
+    dpg.add_separator(
+        parent=page,
+    )
+
+    dpg.add_spacer(
+        height=30,
+        parent=page,
+    )
+
+    build_about(
+        page
+    )
+
+    dpg.add_spacer(
+        height=30,
+        parent=page,
+    )
+
+    dpg.add_separator(
+        parent=page,
+    )
+
+    dpg.add_spacer(
+        height=30,
+        parent=page,
+    )
+
+    build_socials(
+        page
+    )
+
+    dpg.add_spacer(
+        height=40,
+        parent=page,
+    )
+
+    dpg.add_separator(
+        parent=page,
+    )
+
+    dpg.add_spacer(
+        height=15,
+        parent=page,
+    )
+
+    dpg.add_text(
+        "yourestillhere • portfolio",
+        color=TEXT_DIM,
+        parent=page,
+    )
+
+
+def build_loading_window():
+
+    window = dpg.add_window(
+        tag="loading_window",
+        label="Loading",
+        no_title_bar=True,
+        no_resize=True,
+        no_move=True,
+        no_collapse=True,
+        width=420,
+        height=180,
+    )
+
+    dpg.add_spacer(
+        height=25,
+        parent=window,
+    )
+
+    dpg.add_text(
+        "Loading GitHub profile...",
+        color=TEXT,
+        parent=window,
+    )
+
+    dpg.add_spacer(
+        height=15,
+        parent=window,
+    )
+
+    dpg.add_loading_indicator(
+        style=0,
+        radius=3,
+        parent=window,
+    )
+
+    dpg.add_spacer(
+        height=15,
+        parent=window,
+    )
+
+    dpg.add_text(
+        "Fetching public repositories",
+        color=TEXT_DIM,
+        parent=window,
+    )
+
+
+def build_error_window():
+
+    window = dpg.add_window(
+        tag="error_window",
+        label="GitHub Error",
+        no_resize=True,
+        width=600,
+        height=230,
+        show=False,
+    )
+
+    dpg.add_text(
+        "Couldn't load your GitHub profile.",
+        color=TEXT,
+        parent=window,
+    )
+
+    dpg.add_spacer(
+        height=10,
+        parent=window,
+    )
+
+    dpg.add_text(
+        "",
+        tag="error_text",
+        color=TEXT_DIM,
+        wrap=540,
+        parent=window,
+    )
+
+    dpg.add_spacer(
+        height=20,
+        parent=window,
+    )
+
+    dpg.add_button(
+        label="Retry",
+        width=120,
+        height=36,
+        callback=retry_github,
+        parent=window,
+    )
+
+
+def retry_github(
+    sender=None,
+    app_data=None,
+    user_data=None,
+):
+
+    global loading
+    global load_error
+    global profile_loaded
+    global repositories_loaded
+
+    with data_lock:
+
+        loading = True
+        load_error = ""
+
+    profile_loaded = False
+    repositories_loaded = False
+
+    if dpg.does_item_exist(
+        "error_window"
+    ):
+        dpg.hide_item(
+            "error_window"
+        )
+
+    if dpg.does_item_exist(
+        "loading_window"
+    ):
+        dpg.show_item(
+            "loading_window"
+        )
+
+    thread = threading.Thread(
+        target=load_github_data,
+        daemon=True,
+    )
+
+    thread.start()
+
+
+def refresh_ui():
+
+    global profile_loaded
+    global repositories_loaded
+
+    with data_lock:
+
+        current_loading = loading
+        current_error = load_error
+        user_available = github_user is not None
+
+    if (
+        not current_loading
+        and user_available
+        and not profile_loaded
+    ):
+
+        if dpg.does_item_exist(
+            "loading_window"
+        ):
+            dpg.hide_item(
+                "loading_window"
+            )
+
+        if dpg.does_item_exist(
+            "profile_container"
+        ):
+
+            dpg.delete_item(
+                "profile_container",
+                children_only=True,
+            )
+
+            build_profile(
+                "profile_container"
+            )
+
+        profile_loaded = True
+
+    if (
+        not current_loading
+        and user_available
+        and not repositories_loaded
+    ):
+
+        if dpg.does_item_exist(
+            "repo_loading_text"
+        ):
+            dpg.hide_item(
+                "repo_loading_text"
+            )
+
+        rebuild_repositories()
+
+        repositories_loaded = True
+
+    if (
+        not current_loading
+        and current_error
+    ):
+
+        if dpg.does_item_exist(
+            "loading_window"
+        ):
+            dpg.hide_item(
+                "loading_window"
+            )
+
+        if dpg.does_item_exist(
+            "error_text"
+        ):
+            dpg.set_value(
+                "error_text",
+                current_error,
+            )
+
+        if dpg.does_item_exist(
+            "error_window"
+        ):
+            dpg.show_item(
+                "error_window"
+            )
+
+
+def center_window(tag, width, height):
+
+    try:
+
+        viewport_width = dpg.get_viewport_width()
+        viewport_height = dpg.get_viewport_height()
+
+        x = max(
+            0,
+            int(
+                (viewport_width - width) / 2
+            ),
+        )
+
+        y = max(
+            0,
+            int(
+                (viewport_height - height) / 2
+            ),
+        )
+
+        dpg.set_item_pos(
+            tag,
+            [x, y],
+        )
+
+    except Exception:
+        pass
+
+
+def main():
+
+    dpg.create_context()
+
+    setup_theme()
+
+    fonts = ensure_fonts()
+
+    dpg.create_viewport(
+        title=APP_TITLE,
+        width=1200,
+        height=850,
+        min_width=850,
+        min_height=600,
+        resizable=True,
+        decorated=False,
+    )
+
+    build_app()
+
+    build_loading_window()
+
+    build_error_window()
+
+    if fonts.get("default"):
+        dpg.bind_font(
+            fonts["default"]
+        )
+
+    dpg.setup_dearpygui()
+
+    dpg.show_viewport()
+
+    dpg.set_primary_window(
+        "main_window",
+        True,
+    )
+
+    center_window(
+        "loading_window",
+        420,
+        180,
+    )
+
+    center_window(
+        "error_window",
+        600,
+        230,
+    )
+
+    thread = threading.Thread(
+        target=load_github_data,
+        daemon=True,
+    )
+
+    thread.start()
+
+    while dpg.is_dearpygui_running():
+
+        refresh_ui()
+
+        dpg.render_dearpygui_frame()
+
+    dpg.destroy_context()
+
+
+if __name__ == "__main__":
+    main()
